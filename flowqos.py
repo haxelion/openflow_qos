@@ -10,10 +10,12 @@ from ryu.lib.packet import packet, ethernet, ipv4, ipv6, tcp, udp
 class FlowQoS(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
     AUTHORIZED_SERVER = '10.0.0.1'
+    LIST_MAX = 100
 
     def __init__(self, *args, **kwargs):
         super(FlowQoS, self).__init__(*args, **kwargs)
         self.mac_to_port = {}
+        self.pending_qos = []
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -58,6 +60,19 @@ class FlowQoS(app_manager.RyuApp):
                                     match=match, instructions=inst)
         datapath.send_msg(mod)
 
+    def add_qos_flow(self, datapath, qos):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, [parser.OFPActionSetQueue(1), parser.OFPActionOutput(qos[3])])]
+        match = parser.OFPMatch(eth_type = 0x800, ipv4_src = qos[4], ipv4_dst = qos[1], ip_proto = 0x11, udp_src = int(qos[5]), udp_dst = int(qos[2]))
+        mod = parser.OFPFlowMod(datapath=datapath, priority=2, match=match, instructions=inst, idle_timeout=10)
+        datapath.send_msg(mod)
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, [parser.OFPActionSetQueue(1), parser.OFPActionOutput(qos[6])])]
+        match = parser.OFPMatch(eth_type = 0x800, ipv4_src = qos[1], ipv4_dst = qos[4], ip_proto = 0x11, udp_src = int(qos[2]), udp_dst = int(qos[5]))
+        mod = parser.OFPFlowMod(datapath=datapath, priority=2, match=match, instructions=inst, idle_timeout=20)
+        datapath.send_msg(mod)
+
+
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         # If you hit this you might want to increase
@@ -98,9 +113,26 @@ class FlowQoS(app_manager.RyuApp):
                 is_sip = True
         if is_sip:
             sip = SIPParser(msg.data[offset:])
-            self.logger.info('[SIP] %s to %s for call %s: %s', src_ip, dst_ip, sip.call_id, sip.request) 
             if sip.has_sdp:
-                self.logger.info('\t[SDP] %s:%s', sip.c_ip, sip.m_port)
+                # self.logger.info('[SIP] %s to %s for call %s: %s', src_ip, dst_ip, sip.call_id, sip.request) 
+                # self.logger.info('[SDP] %s:%s', sip.c_ip, sip.m_port)
+                if sip.request.startswith('INVITE'):
+                    self.pending_qos.append([sip.call_id, sip.c_ip, sip.m_port, in_port])
+                    # avoid building a list too big by dropping hold pending request
+                    if len(self.pending_qos) > self.LIST_MAX:
+                        self.pending_qos.pop()
+                elif '200' in sip.request:
+                    confirmed = None
+                    for p in self.pending_qos:
+                        if p[0] == sip.call_id:
+                            confirmed = p
+                            self.pending_qos.remove(p)
+                    if confirmed != None:
+                        confirmed.append(sip.c_ip)
+                        confirmed.append(sip.m_port)
+                        confirmed.append(in_port)
+                        self.add_qos_flow(datapath, confirmed)
+                        self.logger.info('[QoS] Priority path %s:%s <-> %s:%s', confirmed[1], confirmed[2], confirmed[4], confirmed[5])
 
         dst = eth.dst
         src = eth.src
