@@ -150,7 +150,7 @@ class SimpleSwitch(app_manager.RyuApp):
                     host1.append(tcp_pkt.src_port)
                     host2.append(tcp_pkt.dst_port)
                     # add non prioritary flow
-                    self.add_qos_flow(datapath, host1, host2, proto, 1)
+                    self.add_qos_l4_flow(datapath, host1, host2, proto, 1)
                 elif proto == 0x11:
                     udp_pkt = pkt.get_protocol(udp.udp)
                     host1.append(udp_pkt.src_port)
