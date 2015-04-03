@@ -1,5 +1,6 @@
 import logging
 import struct
+import time
 
 from ryu.base import app_manager
 from ryu.controller import mac_to_port
@@ -24,16 +25,17 @@ class SimpleSwitch(app_manager.RyuApp):
         self.mac_to_port = {}
         self.ip_to_mac = {}
         self.pending_qos = []
+        self.start_time = time.time()
 
     def l3_resolve(self, did, ip):
         if ip in self.ip_to_mac:
             if self.ip_to_mac[ip] in self.mac_to_port[did]:
                 return self.mac_to_port[did][self.ip_to_mac[ip]]
             else:
-                self.logger.info("[L2] Unknown mac {}".format(self.ip_to_mac[ip]))
+                self.logger.info("[%f] Unknown mac %s", time.time() - self.start_time, self.ip_to_mac[ip])
                 return None
         else:
-            self.logger.info("[L3] Unknown ip {}".format(ip))
+            self.logger.info("[%f] Unknown ip %s", time.time() - self.start_time, ip)
             return None
 
     def add_qos_l4_flow(self, datapath, host1, host2, protocol, priority):
@@ -46,7 +48,7 @@ class SimpleSwitch(app_manager.RyuApp):
         port2 = self.l3_resolve(datapath.id, host2[0])
         if port1 == None or port2 == None:
             return
-        self.logger.info('[L4] flow between {}:{} and {}:{} with priority {}'.format(host1[0], host1[1], host2[0], host2[1], priority))
+        self.logger.info('[%f] L4 flow between %s:%d and %s:%d with priority %d', time.time() - self.start_time, host1[0], int(host1[1]), host2[0], int(host2[1]), priority)
         # priority path host1 -> host2
         actions = [parser.OFPActionVlanPcp(priority),
                    parser.OFPActionOutput(port2)]
@@ -95,7 +97,7 @@ class SimpleSwitch(app_manager.RyuApp):
         port2 = self.l3_resolve(datapath.id, host2)
         if port1 == None or port2 == None:
             return
-        self.logger.info('[L3] flow between {} and {}'.format(host1, host2))
+        self.logger.info('[%f] L3 flow between %s and %s', time.time() - self.start_time, host1, host2)
         # host1 -> host2
         actions = [parser.OFPActionOutput(port2)]
         match = parser.OFPMatch(dl_type = 0x800,
@@ -186,8 +188,8 @@ class SimpleSwitch(app_manager.RyuApp):
         if is_sip:
             sip = SIPParser(msg.data[offset:])
             if sip.has_sdp:
-                self.logger.info('[SIP] %s to %s for call %s: %s', src_ip, dst_ip, sip.call_id, sip.request) 
-                self.logger.info('[SDP] %s:%s', sip.c_ip, sip.m_port)
+                self.logger.info('[%f] SIP %s to %s for call %s: %s', time.time() - self.start_time, src_ip, dst_ip, sip.call_id, sip.request) 
+                self.logger.info('[%f] SDP: %s:%s', time.time() - self.start_time, sip.c_ip, sip.m_port)
                 if sip.request.startswith('INVITE'):
                     self.pending_qos.append([sip.call_id, (sip.c_ip, sip.m_port)])
                     # avoid building a list too big by dropping old pending request
@@ -270,6 +272,7 @@ class SimpleSwitch(app_manager.RyuApp):
  
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
+
         msg = ev.msg
         datapath = msg.datapath
         ofproto = datapath.ofproto
